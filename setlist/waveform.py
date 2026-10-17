@@ -21,6 +21,7 @@ class TrackWidget(QWidget):
 
     clicked = Signal(object)
     double_clicked = Signal(object)
+    switch_requested = Signal(object)  # shift+click: jump here at the same time position
     seek_requested = Signal(object, float)
     drag_moved = Signal(object, QPointF)  # track, global cursor position
     drag_finished = Signal(object)
@@ -164,6 +165,8 @@ class TrackWidget(QWidget):
         pos = event.position()
         if self.current and rect.contains(pos):
             self.seek_requested.emit(self, (pos.x() - rect.left()) / rect.width())
+        elif event.modifiers() & Qt.ShiftModifier:
+            self.switch_requested.emit(self)
         else:
             self.clicked.emit(self)
             self._press_pos = pos  # may become a drag to reorder

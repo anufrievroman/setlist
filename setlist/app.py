@@ -55,6 +55,7 @@ class MainWindow(QMainWindow):
         self.selected_index = None
         self.current_index = None
         self.folder = None
+        self._pending_seek = None  # (position_ms, play) applied once a switched-to track has loaded
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -204,6 +205,8 @@ class MainWindow(QMainWindow):
             (Qt.Key_Backspace, self.restart),
             (Qt.Key_Up, lambda: self.move_selection(-1)),
             (Qt.Key_Down, lambda: self.move_selection(1)),
+            (Qt.SHIFT | Qt.Key_Up, lambda: self._switch_relative(-1)),
+            (Qt.SHIFT | Qt.Key_Down, lambda: self._switch_relative(1)),
             (Qt.ALT | Qt.Key_Up, lambda: self.move_selected_track(-1)),
             (Qt.ALT | Qt.Key_Down, lambda: self.move_selected_track(1)),
             (Qt.Key_Left, lambda: self.seek_by(-SEEK_STEP_MS)),
@@ -284,6 +287,7 @@ class MainWindow(QMainWindow):
         for f in files:
             track = TrackWidget(str(f), f.stem)
             track.clicked.connect(self._on_track_clicked)
+            track.switch_requested.connect(lambda t: self.switch_keeping_time(self.tracks.index(t)))
             track.double_clicked.connect(self._on_track_double_clicked)
             track.seek_requested.connect(self._on_seek_requested)
             track.drag_moved.connect(self._on_track_drag)
@@ -379,6 +383,7 @@ class MainWindow(QMainWindow):
         self.scroll.ensureWidgetVisible(self.tracks[index], 0, 10)
 
     def load(self, index):
+        self._pending_seek = None
         if self.current_index is not None:
             self.tracks[self.current_index].set_state(current=False, playing=False)
             self.tracks[self.current_index].set_progress(0.0)
@@ -387,6 +392,27 @@ class MainWindow(QMainWindow):
         self.player.setSource(QUrl.fromLocalFile(self.tracks[index].path))
         self._apply_volume()
         self._update_progress()
+
+    def _switch_relative(self, delta):
+        base = self.current_index if self.current_index is not None else self.selected_index
+        if base is not None:
+            self.switch_keeping_time(base + delta)
+
+    def switch_keeping_time(self, index):
+        """Load another track at the current time position (for comparing versions)."""
+        if not self.tracks:
+            return
+        index = max(0, min(index, len(self.tracks) - 1))
+        if self.current_index is None or index == self.current_index:
+            self.select(index)
+            return
+        position = self.player.position()
+        was_playing = self._is_playing()
+        self.player.pause()
+        self.select(index)
+        self.load(index)
+        # Seeking only works once the new file has loaded; see _on_media_status.
+        self._pending_seek = (position, was_playing)
 
     def move_selection(self, delta):
         if self.selected_index is not None:
@@ -449,6 +475,18 @@ class MainWindow(QMainWindow):
     # ----- Player callbacks -----
 
     def _on_media_status(self, status):
+        if self._pending_seek and status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
+            position, play = self._pending_seek
+            self._pending_seek = None
+            duration = self.player.duration()
+            if duration > 0 and position > duration - 500:
+                # The new track is shorter than where we were: park near its end, paused.
+                position, play = max(0, duration - 500), False
+            self.player.setPosition(position)
+            self._update_progress()
+            if play:
+                self.player.play()
+            return
         if status != QMediaPlayer.EndOfMedia or self.current_index is None:
             return
         next_index = self.current_index + 1
