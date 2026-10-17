@@ -28,6 +28,10 @@ dependencies = [
     "soundfile>=0.12",
 ]
 
+[project.urls]
+Homepage = "https://github.com/anufrievroman/setlist"
+Issues = "https://github.com/anufrievroman/setlist/issues"
+
 [project.gui-scripts]
 setlist = "setlist.app:main"
 
