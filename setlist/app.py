@@ -1,11 +1,12 @@
-"""BackingTracks — a minimal player for band practice."""
+"""Setlist — a minimal backing-track player for band practice."""
 
+import argparse
 import re
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, QUrl
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPalette, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
@@ -15,19 +16,23 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
-from analysis import AnalysisJob
-from waveform import TrackWidget
+from . import __version__
+from .analysis import AnalysisJob
+from .waveform import TrackWidget
 
 AUDIO_EXTENSIONS = {".mp3", ".wav"}
-AUTO_ADVANCE_ON = "⇉  Play continuously"
-AUTO_ADVANCE_OFF = "⇥  Stop after each track"
+ICON_PATH = Path(__file__).parent / "resources" / "icon.png"
+AUTO_ADVANCE_ON = "⇉"
+AUTO_ADVANCE_OFF = "⇥"
 # Normalization only turns tracks down (output volume can't exceed 1.0), so the
 # reference is the quietest track, but never quieter than this.
 NORMALIZE_FLOOR_LUFS = -23.0
+SEEK_STEP_MS = 5000
 
 TRANSPORT_STYLE = """
 QPushButton { border: none; background: transparent; font-size: 40px; padding: 4px 14px; color: palette(text); }
@@ -42,7 +47,7 @@ def natural_key(name):
 class MainWindow(QMainWindow):
     def __init__(self, start_folder=None):
         super().__init__()
-        self.settings = QSettings("BackingTracks", "BackingTracks")
+        self.settings = QSettings("Setlist", "Setlist")
         self.loudness = {}
         self.tracks = []
         self.selected_index = None
@@ -66,7 +71,9 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_shortcuts()
 
-        folder = start_folder or self.settings.value("folder") or str(Path.cwd())
+        # Apps launched from Finder start in "/", which is never a useful default.
+        default = Path.cwd() if Path.cwd() != Path("/") else Path.home()
+        folder = start_folder or self.settings.value("folder") or str(default)
         self.load_folder(folder)
 
     # ----- UI -----
@@ -85,16 +92,21 @@ class MainWindow(QMainWindow):
         button.setToolTip(tooltip)
         button.setFocusPolicy(Qt.NoFocus)
         button.setCheckable(checkable)
+        button.setFixedSize(56, 44)
         button.clicked.connect(slot)
+        self.setting_buttons.append(button)
         return button
 
     def _build_ui(self):
+        self.setting_buttons = []
         central = QWidget()
+        central.setAutoFillBackground(True)
+        self.central = central
         layout = QVBoxLayout(central)
         layout.setContentsMargins(12, 12, 12, 12)
 
         top = QHBoxLayout()
-        top.addWidget(self._setting_button("Folder…", "Open folder (⌘O)", self.choose_folder))
+        top.addWidget(self._setting_button("≡", "Open folder (⌘O)", self.choose_folder))
         top.addStretch(1)
 
         self.auto_button = self._setting_button("", "", self._on_auto_toggled, checkable=True)
@@ -103,32 +115,37 @@ class MainWindow(QMainWindow):
         top.addWidget(self.auto_button)
 
         self.normalize_button = self._setting_button(
-            "Normalize",
-            "Match the loudness (LUFS) of all tracks so the volume doesn't jump between them",
+            "≃",
+            "Normalize: match the loudness (LUFS) of all tracks so the volume doesn't jump between them",
             self._on_normalize_toggled,
             checkable=True,
         )
-        self.normalize_button.setChecked(self.settings.value("normalize", False, type=bool))
+        self.normalize_button.setChecked(self.settings.value("normalize", True, type=bool))
         top.addWidget(self.normalize_button)
         layout.addLayout(top)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFocusPolicy(Qt.NoFocus)
+        self.scroll.setFrameShape(QScrollArea.NoFrame)
+        self.scroll.viewport().setAutoFillBackground(False)
         self.list_container = QWidget()
         self.list_layout = QVBoxLayout(self.list_container)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
         self.list_layout.setSpacing(4)
         self.list_layout.addStretch(1)
         self.scroll.setWidget(self.list_container)
-        layout.addWidget(self.scroll, 1)
 
         self.empty_label = QLabel("No mp3 or wav files in this folder")
         self.empty_label.setAlignment(Qt.AlignCenter)
         font = self.empty_label.font()
-        font.setPointSize(20)
+        font.setPointSize(14)
         self.empty_label.setFont(font)
-        self.list_layout.insertWidget(0, self.empty_label)
+
+        self.list_stack = QStackedWidget()
+        self.list_stack.addWidget(self.scroll)
+        self.list_stack.addWidget(self.empty_label)
+        layout.addWidget(self.list_stack, 1)
 
         transport = QHBoxLayout()
         transport.addStretch(1)
@@ -142,6 +159,29 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self.resize(900, 700)
+        self._apply_theme()
+        QApplication.styleHints().colorSchemeChanged.connect(lambda _: self._apply_theme())
+
+    def _apply_theme(self):
+        """Use the system's slightly darker 'Mid' color as background in dark mode."""
+        dark = QApplication.styleHints().colorScheme() == Qt.ColorScheme.Dark
+        self.central.setBackgroundRole(QPalette.Mid if dark else QPalette.Window)
+        pal = self.empty_label.palette()
+        gray = QColor(QApplication.palette().color(QPalette.WindowText))
+        gray.setAlpha(110)
+        pal.setColor(QPalette.WindowText, gray)
+        self.empty_label.setPalette(pal)
+
+        text = QApplication.palette().color(QPalette.Text)
+        rgb = f"{text.red()}, {text.green()}, {text.blue()}"
+        style = f"""
+            QPushButton {{ border: none; border-radius: 8px; font-size: 26px; background: rgba({rgb}, 0.08); }}
+            QPushButton:hover {{ background: rgba({rgb}, 0.14); }}
+            QPushButton:pressed {{ background: rgba({rgb}, 0.22); }}
+            QPushButton:checked {{ background: rgba(0, 0, 0, 0.35); }}
+        """
+        for button in self.setting_buttons:
+            button.setStyleSheet(style)
 
     def _build_shortcuts(self):
         for key, slot in (
@@ -149,6 +189,8 @@ class MainWindow(QMainWindow):
             (Qt.Key_Backspace, self.restart),
             (Qt.Key_Up, lambda: self.move_selection(-1)),
             (Qt.Key_Down, lambda: self.move_selection(1)),
+            (Qt.Key_Left, lambda: self.seek_by(-SEEK_STEP_MS)),
+            (Qt.Key_Right, lambda: self.seek_by(SEEK_STEP_MS)),
             (Qt.Key_Return, self.play),
         ):
             shortcut = QShortcut(QKeySequence(key), self)
@@ -195,7 +237,7 @@ class MainWindow(QMainWindow):
             path = Path.home()
         self.folder = str(path)
         self.settings.setValue("folder", self.folder)
-        self.setWindowTitle(f"BackingTracks — {path.name}")
+        self.setWindowTitle(f"Setlist — {path.name}")
 
         self.player.stop()
         self.player.setSource(QUrl())
@@ -222,7 +264,7 @@ class MainWindow(QMainWindow):
             job.signals.done.connect(self._on_analysis)
             self.pool.start(job)
 
-        self.empty_label.setVisible(not self.tracks)
+        self.list_stack.setCurrentWidget(self.scroll if self.tracks else self.empty_label)
         if self.tracks:
             self.select(0)
             self.load(0)
@@ -284,6 +326,13 @@ class MainWindow(QMainWindow):
     def stop(self):
         self.player.stop()
         self.player.setPosition(0)
+        self._update_progress()
+
+    def seek_by(self, delta_ms):
+        duration = self.player.duration()
+        if self.current_index is None or duration <= 0:
+            return
+        self.player.setPosition(max(0, min(self.player.position() + delta_ms, duration - 1)))
         self._update_progress()
 
     def restart(self):
@@ -360,12 +409,32 @@ class MainWindow(QMainWindow):
             self.tracks[self.current_index].set_progress(min(1.0, position / duration))
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(prog="setlist", description="Backing-track player for band practice.")
+    parser.add_argument("folder", nargs="?", help="folder with .mp3/.wav tracks (default: last used)")
+    parser.add_argument(
+        "--install-app",
+        nargs="?",
+        const="",
+        metavar="DIR",
+        help="macOS: create Setlist.app in ~/Applications (or DIR) and exit",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser.parse_known_args()[0]
+
+
 def main():
+    args = parse_args()
+    if args.install_app is not None:
+        from .macos_app import install_app
+
+        print(f"Installed {install_app(args.install_app or None)}")
+        return
+
     app = QApplication(sys.argv)
-    app.setApplicationName("BackingTracks")
-    app.setApplicationDisplayName("BackingTracks")
-    start_folder = sys.argv[1] if len(sys.argv) > 1 else None
-    window = MainWindow(start_folder)
+    app.setApplicationName("Setlist")
+    app.setWindowIcon(QIcon(str(ICON_PATH)))
+    window = MainWindow(args.folder)
     window.show()
     sys.exit(app.exec())
 

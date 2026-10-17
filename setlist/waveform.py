@@ -21,9 +21,10 @@ class TrackWidget(QWidget):
     double_clicked = Signal(object)
     seek_requested = Signal(object, float)
 
-    TITLE_HEIGHT = 44
+    TITLE_HEIGHT = 32
     WAVE_HEIGHT = 35
-    PADDING = 10
+    PADDING = 8
+    WAVE_BOTTOM_GAP = 6
 
     def __init__(self, path, title, parent=None):
         super().__init__(parent)
@@ -37,7 +38,7 @@ class TrackWidget(QWidget):
         self.playing = False
         self._bars_cache = (None, None)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setFixedHeight(self.TITLE_HEIGHT + self.WAVE_HEIGHT + 2 * self.PADDING)
+        self.setFixedHeight(self.TITLE_HEIGHT + self.WAVE_HEIGHT + 2 * self.PADDING + self.WAVE_BOTTOM_GAP)
 
     def set_analysis(self, peaks, duration):
         self.peaks = peaks
@@ -86,21 +87,15 @@ class TrackWidget(QWidget):
         text_color = pal.color(QPalette.Text)
 
         card = QRectF(self.rect()).adjusted(4, 3, -4, -3)
-        if self.selected:
-            bg = QColor(accent)
-            bg.setAlpha(45)
-            painter.setPen(accent)
-            painter.setBrush(bg)
-        else:
-            bg = QColor(text_color)
-            bg.setAlpha(14)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(bg)
+        bg = QColor(text_color)
+        bg.setAlpha(40 if self.selected else 12)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(bg)
         painter.drawRoundedRect(card, 10, 10)
 
         # Title
         font = QFont(self.font())
-        font.setPointSize(22)
+        font.setPointSize(18)
         font.setBold(self.current)
         painter.setFont(font)
         painter.setPen(text_color)
@@ -111,7 +106,7 @@ class TrackWidget(QWidget):
         if self.current and self.duration:
             time_text = f"{format_time(self.progress * self.duration)} / {time_text}"
         time_font = QFont("Menlo")
-        time_font.setPointSize(20)
+        time_font.setPointSize(16)
         time_font.setBold(self.current)
         painter.save()
         painter.setFont(time_font)
