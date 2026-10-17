@@ -1,9 +1,9 @@
 """Track row widget: title, time and waveform with playback progress."""
 
 import numpy as np
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPalette
-from PySide6.QtWidgets import QSizePolicy, QWidget
+from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
 BAR_WIDTH = 2
 BAR_GAP = 1
@@ -11,6 +11,8 @@ BAR_GAP = 1
 
 def format_time(seconds):
     seconds = int(max(0, seconds))
+    if seconds >= 3600:
+        return f"{seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"
     return f"{seconds // 60}:{seconds % 60:02d}"
 
 
@@ -20,6 +22,8 @@ class TrackWidget(QWidget):
     clicked = Signal(object)
     double_clicked = Signal(object)
     seek_requested = Signal(object, float)
+    drag_moved = Signal(object, QPointF)  # track, global cursor position
+    drag_finished = Signal(object)
 
     TITLE_HEIGHT = 32
     WAVE_HEIGHT = 35
@@ -36,6 +40,8 @@ class TrackWidget(QWidget):
         self.selected = False
         self.current = False
         self.playing = False
+        self.dragging = False
+        self._press_pos = None
         self._bars_cache = (None, None)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.setFixedHeight(self.TITLE_HEIGHT + self.WAVE_HEIGHT + 2 * self.PADDING + self.WAVE_BOTTOM_GAP)
@@ -88,7 +94,7 @@ class TrackWidget(QWidget):
 
         card = QRectF(self.rect()).adjusted(4, 3, -4, -3)
         bg = QColor(text_color)
-        bg.setAlpha(40 if self.selected else 12)
+        bg.setAlpha(70 if self.dragging else 40 if self.selected else 12)
         painter.setPen(Qt.NoPen)
         painter.setBrush(bg)
         painter.drawRoundedRect(card, 10, 10)
@@ -99,7 +105,7 @@ class TrackWidget(QWidget):
         font.setBold(self.current)
         painter.setFont(font)
         painter.setPen(text_color)
-        marker = ("▶  " if self.playing else "❚❚  ") if self.current else ""
+        marker = ("▶" if self.playing else "❚❚") if self.current else ""
         title_rect = QRectF(self.PADDING + 6, self.PADDING, self.width() - 2 * self.PADDING - 12, self.TITLE_HEIGHT)
 
         time_text = format_time(self.duration) if self.duration else ""
@@ -116,9 +122,14 @@ class TrackWidget(QWidget):
         painter.drawText(title_rect, Qt.AlignRight | Qt.AlignVCenter, time_text)
         painter.restore()
 
-        title_width = int(title_rect.width() - time_width - 24)
-        text = painter.fontMetrics().elidedText(marker + self.title, Qt.ElideRight, title_width)
-        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+        # Play/pause marker on the left; title centred with equal margins on both sides
+        # so it never runs into the marker or the time.
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, marker)
+        marker_width = painter.fontMetrics().horizontalAdvance(marker)
+        side = max(time_width, marker_width) + 24
+        centre_rect = title_rect.adjusted(side, 0, -side, 0)
+        text = painter.fontMetrics().elidedText(self.title, Qt.ElideRight, int(centre_rect.width()))
+        painter.drawText(centre_rect, Qt.AlignHCenter | Qt.AlignVCenter, text)
 
         # Waveform
         rect = self._wave_rect()
@@ -155,6 +166,27 @@ class TrackWidget(QWidget):
             self.seek_requested.emit(self, (pos.x() - rect.left()) / rect.width())
         else:
             self.clicked.emit(self)
+            self._press_pos = pos  # may become a drag to reorder
+
+    def mouseMoveEvent(self, event):
+        if self._press_pos is None or not event.buttons() & Qt.LeftButton:
+            return
+        if not self.dragging:
+            if (event.position() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
+                return
+            self.dragging = True
+            self.setCursor(Qt.ClosedHandCursor)
+            self.raise_()
+            self.update()
+        self.drag_moved.emit(self, event.globalPosition())
+
+    def mouseReleaseEvent(self, event):
+        self._press_pos = None
+        if self.dragging:
+            self.dragging = False
+            self.unsetCursor()
+            self.update()
+            self.drag_finished.emit(self)
 
     def mouseDoubleClickEvent(self, event):
         if event.button() == Qt.LeftButton and not (self.current and self._wave_rect().contains(event.position())):

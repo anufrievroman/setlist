@@ -9,6 +9,7 @@ A minimal backing-track player for band practice. Point it at a folder of `.mp3`
 - Big track titles with each track's length, and a waveform that fills in as the track plays
 - Stops after each track and waits for you, or plays straight through (toggle)
 - Loudness normalization (LUFS, ITU-R BS.1770), so the volume doesn't jump between tracks
+- Drag tracks into your set order; it is remembered per folder
 - Keyboard-first controls
 - Follows the system light/dark appearance
 
@@ -44,12 +45,13 @@ This creates a regular app you can open from Launchpad or Spotlight and keep in 
 | --- | --- |
 | Space | Play / pause the selected track |
 | ↑ / ↓ | Select previous / next track |
+| ⌥↑ / ⌥↓ | Move the selected track up / down in the list |
 | ← / → | Jump back / forward 5 seconds |
 | Backspace | Back to the start of the track |
 | Return | Play the selected track |
 | ⌘O | Open a folder |
 
-Click a track to select it, double-click to play it, and click the waveform of the loaded track to jump to that spot.
+Click a track to select it, double-click to play it, and click the waveform of the loaded track to jump to that spot. Drag tracks by their title to reorder them; the order is remembered for each folder (new files are added at the end).
 
 ### Top bar
 

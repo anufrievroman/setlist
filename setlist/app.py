@@ -1,6 +1,7 @@
 """Setlist — a minimal backing-track player for band practice."""
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__
 from .analysis import AnalysisJob
-from .waveform import TrackWidget
+from .waveform import TrackWidget, format_time
 
 AUDIO_EXTENSIONS = {".mp3", ".wav"}
 ICON_PATH = Path(__file__).parent / "resources" / "icon.png"
@@ -35,9 +36,10 @@ NORMALIZE_FLOOR_LUFS = -23.0
 SEEK_STEP_MS = 5000
 
 TRANSPORT_STYLE = """
-QPushButton { border: none; background: transparent; font-size: 40px; padding: 4px 14px; color: palette(text); }
-QPushButton:pressed { color: palette(highlight); }
+QPushButton {{ border: none; background: transparent; font-size: {size}px; padding: 0 14px; color: palette(text); }}
+QPushButton:pressed {{ color: palette(highlight); }}
 """
+TRANSPORT_HEIGHT = 60  # shared by all transport buttons so different glyph sizes stay vertically centred
 
 
 def natural_key(name):
@@ -78,11 +80,12 @@ class MainWindow(QMainWindow):
 
     # ----- UI -----
 
-    def _transport_button(self, text, tooltip, slot):
+    def _transport_button(self, text, tooltip, slot, size=40):
         button = QPushButton(text)
         button.setToolTip(tooltip)
         button.setFocusPolicy(Qt.NoFocus)
-        button.setStyleSheet(TRANSPORT_STYLE)
+        button.setStyleSheet(TRANSPORT_STYLE.format(size=size))
+        button.setFixedHeight(TRANSPORT_HEIGHT)
         button.setCursor(Qt.PointingHandCursor)
         button.clicked.connect(slot)
         return button
@@ -147,13 +150,20 @@ class MainWindow(QMainWindow):
         self.list_stack.addWidget(self.empty_label)
         layout.addWidget(self.list_stack, 1)
 
+        self.summary_label = QLabel()
+        self.summary_label.setAlignment(Qt.AlignCenter)
+        font = self.summary_label.font()
+        font.setPointSize(14)
+        self.summary_label.setFont(font)
+        layout.addWidget(self.summary_label)
+
         transport = QHBoxLayout()
         transport.addStretch(1)
-        transport.addWidget(self._transport_button("⏮", "Previous track", self.previous_track))
+        transport.addWidget(self._transport_button("⏮", "Previous track", self.previous_track, size=30))
         transport.addWidget(self._transport_button("▶", "Play (Space)", self.play))
         transport.addWidget(self._transport_button("⏸", "Pause (Space)", self.player.pause))
         transport.addWidget(self._transport_button("⏹", "Stop", self.stop))
-        transport.addWidget(self._transport_button("⏭", "Next track", self.next_track))
+        transport.addWidget(self._transport_button("⏭", "Next track", self.next_track, size=30))
         transport.addStretch(1)
         layout.addLayout(transport)
 
@@ -174,6 +184,7 @@ class MainWindow(QMainWindow):
         gray.setAlpha(110)
         pal.setColor(QPalette.WindowText, gray)
         self.empty_label.setPalette(pal)
+        self.summary_label.setPalette(pal)
 
         text = QApplication.palette().color(QPalette.Text)
         rgb = f"{text.red()}, {text.green()}, {text.blue()}"
@@ -193,6 +204,8 @@ class MainWindow(QMainWindow):
             (Qt.Key_Backspace, self.restart),
             (Qt.Key_Up, lambda: self.move_selection(-1)),
             (Qt.Key_Down, lambda: self.move_selection(1)),
+            (Qt.ALT | Qt.Key_Up, lambda: self.move_selected_track(-1)),
+            (Qt.ALT | Qt.Key_Down, lambda: self.move_selected_track(1)),
             (Qt.Key_Left, lambda: self.seek_by(-SEEK_STEP_MS)),
             (Qt.Key_Right, lambda: self.seek_by(SEEK_STEP_MS)),
             (Qt.Key_Return, self.play),
@@ -265,11 +278,16 @@ class MainWindow(QMainWindow):
             (f for f in path.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS),
             key=lambda f: natural_key(f.name),
         )
-        for i, f in enumerate(files):
+        # Apply the user's saved order; new files go to the end, missing ones are skipped.
+        saved = {name: i for i, name in enumerate(self._track_orders().get(self.folder, []))}
+        files.sort(key=lambda f: (f.name not in saved, saved.get(f.name, 0)))
+        for f in files:
             track = TrackWidget(str(f), f.stem)
             track.clicked.connect(self._on_track_clicked)
             track.double_clicked.connect(self._on_track_double_clicked)
             track.seek_requested.connect(self._on_seek_requested)
+            track.drag_moved.connect(self._on_track_drag)
+            track.drag_finished.connect(lambda _: self._save_order())
             self.list_layout.insertWidget(self.list_layout.count() - 1, track)
             self.tracks.append(track)
             job = AnalysisJob(str(f))
@@ -277,15 +295,74 @@ class MainWindow(QMainWindow):
             self.pool.start(job)
 
         self.list_stack.setCurrentWidget(self.scroll if self.tracks else self.empty_label)
+        self._update_summary()
         if self.tracks:
             self.select(0)
             self.load(0)
         self._update_progress()
 
+    # ----- Track order -----
+
+    def _track_orders(self):
+        try:
+            return json.loads(self.settings.value("track_orders", "{}"))
+        except (TypeError, ValueError):
+            return {}
+
+    def _save_order(self):
+        orders = self._track_orders()
+        orders[self.folder] = [Path(track.path).name for track in self.tracks]
+        self.settings.setValue("track_orders", json.dumps(orders))
+
+    def _move_track(self, track, index):
+        """Move a track widget to `index`, keeping selection and the loaded track."""
+        index = max(0, min(index, len(self.tracks) - 1))
+        old = self.tracks.index(track)
+        if index == old:
+            return
+        selected = self.tracks[self.selected_index] if self.selected_index is not None else None
+        current = self.tracks[self.current_index] if self.current_index is not None else None
+        self.tracks.insert(index, self.tracks.pop(old))
+        self.list_layout.removeWidget(track)
+        self.list_layout.insertWidget(index, track)
+        self.selected_index = self.tracks.index(selected) if selected else None
+        self.current_index = self.tracks.index(current) if current else None
+
+    def _on_track_drag(self, track, global_pos):
+        y = self.list_container.mapFromGlobal(global_pos.toPoint()).y()
+        target = sum(1 for t in self.tracks if t is not track and t.geometry().center().y() < y)
+        self._move_track(track, target)
+
+        # Auto-scroll when dragging near the top or bottom edge
+        viewport = self.scroll.viewport()
+        vy = viewport.mapFromGlobal(global_pos.toPoint()).y()
+        bar = self.scroll.verticalScrollBar()
+        if vy < 40:
+            bar.setValue(bar.value() - 20)
+        elif vy > viewport.height() - 40:
+            bar.setValue(bar.value() + 20)
+
+    def _update_summary(self):
+        """Gray line under the list: number of tracks and total set time."""
+        count = len(self.tracks)
+        self.summary_label.setVisible(count > 0)
+        total = sum(track.duration for track in self.tracks)
+        tracks = f"{count} track" + ("" if count == 1 else "s")
+        self.summary_label.setText(f"{tracks}  ·  {format_time(total)} set time")
+
+    def move_selected_track(self, delta):
+        if self.selected_index is None:
+            return
+        track = self.tracks[self.selected_index]
+        self._move_track(track, self.selected_index + delta)
+        self.scroll.ensureWidgetVisible(track, 0, 10)
+        self._save_order()
+
     def _on_analysis(self, path, peaks, duration, loudness):
         for track in self.tracks:
             if track.path == path:
                 track.set_analysis(peaks, duration)
+                self._update_summary()
                 self.loudness[path] = loudness
                 self._apply_volume()
 
