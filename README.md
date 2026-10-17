@@ -52,6 +52,7 @@ This creates a regular app you can open from Launchpad or Spotlight and keep in 
 | Backspace | Back to the start of the track |
 | Return | Play the selected track |
 | ⌘O | Open a folder |
+| ? | Show all shortcuts (also the ? in the bottom-right corner) |
 
 Click a track to select it, double-click to play it, and click the waveform of the loaded track to jump to that spot. Shift-click a track to switch to it at the same time position, which is handy for comparing different versions of a song. Drag tracks by their title to reorder them; the order is remembered for each folder (new files are added at the end).
 
@@ -62,6 +63,8 @@ Click a track to select it, double-click to play it, and click the waveform of t
 | ≡ | Choose the folder |
 | ⇥ / ⇉ | Stop after each track / play continuously |
 | ≃ | Loudness normalization (on by default) |
+
+The slider in the middle of the top bar sets the volume (remembered between sessions). It works together with normalization.
 
 Normalization only turns louder tracks down to match the quietest one (never below −23 LUFS), so nothing is ever boosted into clipping. Your files are not modified.
 

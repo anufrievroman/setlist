@@ -8,15 +8,17 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPalette, QShortcut
-from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimedia import QAudio, QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QHBoxLayout,
+    QDialog,
     QLabel,
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QSlider,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -34,6 +36,24 @@ AUTO_ADVANCE_OFF = "⇥"
 # reference is the quietest track, but never quieter than this.
 NORMALIZE_FLOOR_LUFS = -23.0
 SEEK_STEP_MS = 5000
+
+HOTKEYS = [
+    ("Space", "Play / pause the selected track"),
+    ("↑ / ↓", "Select previous / next track"),
+    ("← / →", "Jump back / forward 5 seconds"),
+    ("Backspace", "Back to the start of the track"),
+    ("Return", "Play the selected track"),
+    ("⇧↑ / ⇧↓", "Switch to previous / next track at the same time"),
+    ("⌥↑ / ⌥↓", "Move the selected track up / down"),
+    ("⌘O", "Open a folder"),
+    ("?", "Show this window"),
+    ("", ""),
+    ("Click", "Select a track"),
+    ("Double-click", "Play a track"),
+    ("Click waveform", "Jump to that spot in the playing track"),
+    ("⇧-click", "Switch to a track at the same time"),
+    ("Drag", "Reorder tracks (saved per folder)"),
+]
 
 TRANSPORT_STYLE = """
 QPushButton {{ border: none; background: transparent; font-size: {size}px; padding: 0 14px; color: palette(text); }}
@@ -110,13 +130,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
 
         top = QHBoxLayout()
-        top.addWidget(self._setting_button("≡", "Open folder (⌘O)", self.choose_folder))
-        top.addStretch(1)
+        # Left and right groups get equal widths so the volume slider is truly centred.
+        left = QHBoxLayout()
+        left.addWidget(self._setting_button("≡", "Open folder (⌘O)", self.choose_folder))
+        left.addStretch(1)
+        right = QHBoxLayout()
+        right.addStretch(1)
 
         self.auto_button = self._setting_button("", "", self._on_auto_toggled, checkable=True)
         self.auto_button.setChecked(self.settings.value("auto_advance", False, type=bool))
         self._refresh_auto_button()
-        top.addWidget(self.auto_button)
+        right.addWidget(self.auto_button)
 
         self.normalize_button = self._setting_button(
             "≃",
@@ -125,7 +149,28 @@ class MainWindow(QMainWindow):
             checkable=True,
         )
         self.normalize_button.setChecked(self.settings.value("normalize", True, type=bool))
-        top.addWidget(self.normalize_button)
+        right.addWidget(self.normalize_button)
+
+        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(self.settings.value("volume", 100, type=int))
+        self.volume_slider.setFixedWidth(260)
+        self.volume_slider.setFocusPolicy(Qt.NoFocus)  # arrow keys belong to the track list
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        self._refresh_volume_tooltip()
+
+        self.volume_icon = QLabel("♫")
+        font = self.volume_icon.font()
+        font.setPointSize(20)
+        self.volume_icon.setFont(font)
+        icon_width = self.volume_icon.sizeHint().width()
+
+        top.addLayout(left, 1)
+        top.addWidget(self.volume_icon)
+        top.addSpacing(6)
+        top.addWidget(self.volume_slider)
+        top.addSpacing(6 + icon_width)  # mirrors the ♫ so the slider itself stays centred
+        top.addLayout(right, 1)
         layout.addLayout(top)
 
         self.scroll = QScrollArea()
@@ -159,6 +204,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.summary_label)
 
         transport = QHBoxLayout()
+        help_button = QPushButton("?")
+        help_button.setToolTip("Keyboard shortcuts (?)")
+        help_button.setFocusPolicy(Qt.NoFocus)
+        help_button.setCursor(Qt.PointingHandCursor)
+        help_button.setFixedSize(32, 32)
+        help_button.clicked.connect(self.show_hotkeys)
+        self.help_button = help_button
+        transport.addSpacing(help_button.width())  # mirrors the ? button so the transport stays centred
         transport.addStretch(1)
         transport.addWidget(self._transport_button("⏮", "Previous track", self.previous_track, size=30))
         transport.addWidget(self._transport_button("▶", "Play (Space)", self.play))
@@ -166,6 +219,7 @@ class MainWindow(QMainWindow):
         transport.addWidget(self._transport_button("⏹", "Stop", self.stop))
         transport.addWidget(self._transport_button("⏭", "Next track", self.next_track, size=30))
         transport.addStretch(1)
+        transport.addWidget(help_button, 0, Qt.AlignVCenter)
         layout.addLayout(transport)
 
         self.setCentralWidget(central)
@@ -186,6 +240,7 @@ class MainWindow(QMainWindow):
         pal.setColor(QPalette.WindowText, gray)
         self.empty_label.setPalette(pal)
         self.summary_label.setPalette(pal)
+        self.volume_icon.setPalette(pal)
 
         text = QApplication.palette().color(QPalette.Text)
         rgb = f"{text.red()}, {text.green()}, {text.blue()}"
@@ -198,6 +253,21 @@ class MainWindow(QMainWindow):
         """
         for button in self.setting_buttons:
             button.setStyleSheet(style)
+        # Thin custom slider (the native macOS groove can't be resized).
+        accent = QApplication.palette().color(QPalette.Accent).name()
+        self.volume_slider.setStyleSheet(f"""
+            QSlider::groove:horizontal {{ height: 3px; border-radius: 1px; background: rgba({rgb}, 0.18); }}
+            QSlider::sub-page:horizontal {{ height: 3px; border-radius: 1px; background: {accent}; }}
+            QSlider::handle:horizontal {{
+                width: 14px; height: 14px; margin: -6px 0; border-radius: 7px; background: rgb(220, 220, 220);
+            }}
+            QSlider::handle:horizontal:hover {{ background: white; }}
+        """)
+        # Deliberately quiet: grey, borderless, barely there until hovered.
+        self.help_button.setStyleSheet(f"""
+            QPushButton {{ border: none; background: transparent; font-size: 17px; color: rgba({rgb}, 0.35); }}
+            QPushButton:hover {{ color: rgba({rgb}, 0.7); }}
+        """)
 
     def _build_shortcuts(self):
         for key, slot in (
@@ -217,6 +287,34 @@ class MainWindow(QMainWindow):
             shortcut.setContext(Qt.ApplicationShortcut)
             shortcut.activated.connect(slot)
         QShortcut(QKeySequence.Open, self, activated=self.choose_folder)
+        for seq in ("?", "Shift+?"):  # macOS reports ? as Shift+? on most layouts
+            QShortcut(QKeySequence(seq), self, activated=self.show_hotkeys)
+
+    def show_hotkeys(self):
+        # Non-modal, so playback keys keep working while it's open.
+        if getattr(self, "_hotkeys_dialog", None):
+            self._hotkeys_dialog.raise_()
+            self._hotkeys_dialog.activateWindow()
+            return
+        dialog = QDialog(self)
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "_hotkeys_dialog", None))
+        self._hotkeys_dialog = dialog
+        dialog.setWindowTitle("Keyboard Shortcuts")
+        rows = "".join(
+            f"<tr><td align='right' style='padding: 3px 18px 3px 0'><b>{key}</b></td><td>{action}</td></tr>"
+            if key
+            else "<tr><td style='padding: 6px'></td></tr>"
+            for key, action in HOTKEYS
+        )
+        label = QLabel(f"<table>{rows}</table>")
+        font = label.font()
+        font.setPointSize(14)
+        label.setFont(font)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.addWidget(label)
+        dialog.show()
 
     def _refresh_auto_button(self):
         on = self.auto_button.isChecked()
@@ -241,8 +339,20 @@ class MainWindow(QMainWindow):
         self.settings.setValue("normalize", self.normalize_button.isChecked())
         self._apply_volume()
 
+    def _on_volume_changed(self, value):
+        self.settings.setValue("volume", value)
+        self._refresh_volume_tooltip()
+        self._apply_volume()
+
+    def _refresh_volume_tooltip(self):
+        self.volume_slider.setToolTip(f"Volume {self.volume_slider.value()}%")
+
     def _apply_volume(self):
-        """Set output volume so the loaded track matches the folder's reference loudness."""
+        """Output volume = slider level × normalization gain for the loaded track."""
+        # Slider is perceptual (logarithmic); QAudioOutput wants linear.
+        level = QAudio.convertVolume(
+            self.volume_slider.value() / 100, QAudio.LogarithmicVolumeScale, QAudio.LinearVolumeScale
+        )
         gain = 1.0
         if self.normalize_button.isChecked() and self.current_index is not None:
             levels = [v for v in self.loudness.values() if v is not None]
@@ -250,7 +360,7 @@ class MainWindow(QMainWindow):
             if levels and track_level is not None:
                 reference = max(min(levels), NORMALIZE_FLOOR_LUFS)
                 gain = min(1.0, 10 ** ((reference - track_level) / 20))
-        self.audio_output.setVolume(gain)
+        self.audio_output.setVolume(level * gain)
 
     # ----- Folder / tracks -----
 

@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Anufriev Roman" }]
 keywords = ["backing tracks", "music", "band", "rehearsal", "audio player", "waveform", "qt"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Environment :: MacOS X",
     "Environment :: X11 Applications :: Qt",
     "Intended Audience :: End Users/Desktop",
