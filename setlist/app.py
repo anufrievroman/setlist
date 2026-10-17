@@ -159,6 +159,9 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self.resize(900, 700)
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
         self._apply_theme()
         QApplication.styleHints().colorSchemeChanged.connect(lambda _: self._apply_theme())
 
@@ -178,7 +181,8 @@ class MainWindow(QMainWindow):
             QPushButton {{ border: none; border-radius: 8px; font-size: 26px; background: rgba({rgb}, 0.08); }}
             QPushButton:hover {{ background: rgba({rgb}, 0.14); }}
             QPushButton:pressed {{ background: rgba({rgb}, 0.22); }}
-            QPushButton:checked {{ background: rgba(0, 0, 0, 0.35); }}
+            QPushButton:checked {{ background: rgba({rgb}, 0.30); }}
+            QPushButton:checked:hover {{ background: rgba({rgb}, 0.36); }}
         """
         for button in self.setting_buttons:
             button.setStyleSheet(style)
@@ -204,6 +208,14 @@ class MainWindow(QMainWindow):
         self.auto_button.setToolTip(
             "Next track starts automatically" if on else "After each track, wait for Space before playing the next"
         )
+
+    def save_window_state(self):
+        self.settings.setValue("geometry", self.saveGeometry())
+        self.settings.sync()
+
+    def closeEvent(self, event):
+        self.save_window_state()
+        super().closeEvent(event)
 
     def _on_auto_toggled(self):
         self._refresh_auto_button()
@@ -435,6 +447,7 @@ def main():
     app.setApplicationName("Setlist")
     app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = MainWindow(args.folder)
+    app.aboutToQuit.connect(window.save_window_state)  # ⌘Q may skip closeEvent
     window.show()
     sys.exit(app.exec())
 
