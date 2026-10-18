@@ -253,7 +253,7 @@ class MainWindow(QMainWindow):
         self.help_button.setFixedSize(px(32), px(32))
         self.help_spacer.setFixedSize(self.help_button.size())
         for track in self.tracks:
-            track.set_scale(self.scale, title_left=self.scale != 1.0)
+            track.set_scale(self.scale)
         self._apply_theme()
         if self.selected_index is not None:
             # Let the layout settle before scrolling, otherwise the old geometry is used.
@@ -434,7 +434,7 @@ class MainWindow(QMainWindow):
         files.sort(key=lambda f: (f.name not in saved, saved.get(f.name, 0)))
         for f in files:
             track = TrackWidget(str(f), f.stem)
-            track.set_scale(self.scale, title_left=self.scale != 1.0)
+            track.set_scale(self.scale)
             track.clicked.connect(self._on_track_clicked)
             track.switch_requested.connect(lambda t: self.switch_keeping_time(self.tracks.index(t)))
             track.double_clicked.connect(self._on_track_double_clicked)

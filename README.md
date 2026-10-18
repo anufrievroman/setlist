@@ -16,11 +16,19 @@ A minimal backing-track player for band practice. Point it at a folder of `.mp3`
 
 ## Install
 
+Install with [pipx](https://pipx.pypa.io), which puts the `setlist` command on your path in its own isolated environment:
+
 ```sh
-pip install setlist
+pipx install git+https://github.com/anufrievroman/setlist.git
 ```
 
-Requires Python 3.10+.
+To update to the latest version later:
+
+```sh
+pipx upgrade setlist
+```
+
+Requires Python 3.10+. If you don't have pipx yet, install it with `brew install pipx` on macOS (or see the [pipx docs](https://pipx.pypa.io/stable/installation/)), then run `pipx ensurepath`.
 
 ## Usage
 
@@ -38,7 +46,7 @@ setlist --install-app            # creates ~/Applications/Setlist.app
 setlist --install-app /Applications
 ```
 
-This creates a regular app you can open from Launchpad or Spotlight and keep in the Dock. It runs Setlist with the Python environment you installed it into, so re-run the command if you move or recreate that environment.
+This creates a regular app you can open from Launchpad or Spotlight and keep in the Dock. It runs Setlist with the Python environment you installed it into (the pipx one), so updates via `pipx upgrade setlist` take effect in the app too. Re-run the command if that environment is moved, or after an update that changes the app icon.
 
 ### Keys
 

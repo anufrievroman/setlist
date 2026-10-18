@@ -2,11 +2,10 @@
 
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPalette
 from PySide6.QtWidgets import QApplication, QSizePolicy, QWidget
 
-BAR_WIDTH = 2
-BAR_GAP = 1
+POINT_SPACING = 2  # px between envelope points
 
 
 def format_time(seconds):
@@ -47,13 +46,12 @@ class TrackWidget(QWidget):
         self.paused = False
         self.dragging = False
         self._press_pos = None
-        self._bars_cache = (None, None)
+        self._path_cache = (None, None)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.set_scale(1.0)
 
-    def set_scale(self, scale, title_left=False):
+    def set_scale(self, scale):
         self.scale = scale
-        self.title_left = title_left
         self.setFixedHeight(
             self._px(self.TITLE_HEIGHT + self.WAVE_HEIGHT + 2 * self.PADDING + self.WAVE_BOTTOM_GAP)
         )
@@ -66,7 +64,7 @@ class TrackWidget(QWidget):
         self.peaks = peaks
         if not self.duration:
             self.duration = duration
-        self._bars_cache = (None, None)
+        self._path_cache = (None, None)
         self.update()
 
     def set_duration(self, duration):
@@ -96,15 +94,30 @@ class TrackWidget(QWidget):
             p + inset, p + self._px(self.TITLE_HEIGHT), self.width() - 2 * p - 2 * inset, self._px(self.WAVE_HEIGHT)
         )
 
-    def _bars(self, count):
-        if self._bars_cache[0] == count:
-            return self._bars_cache[1]
+    def _wave_path(self, rect):
+        """Closed mirrored outline of the peak envelope, cached per waveform rect."""
+        key = (rect.left(), rect.top(), rect.width(), rect.height())
+        if self._path_cache[0] == key:
+            return self._path_cache[1]
+        count = max(2, int(rect.width() // POINT_SPACING) + 1)
         edges = np.linspace(0, len(self.peaks), count + 1).astype(int)
         edges[1:] = np.maximum(edges[1:], edges[:-1] + 1)
         edges = np.minimum(edges, len(self.peaks))
-        bars = np.array([self.peaks[a:b].max() if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:])])
-        self._bars_cache = (count, bars)
-        return bars
+        env = np.array([self.peaks[a:b].mean() if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:])])
+        env = np.convolve(np.pad(env, 1, mode="edge"), [0.25, 0.5, 0.25], mode="valid")  # soften spikes
+        half = rect.height() / 2
+        mid = rect.center().y()
+        heights = np.maximum(0.5, env * half)
+        xs = np.linspace(rect.left(), rect.right(), count)
+        path = QPainterPath(QPointF(xs[0], mid))
+        for x, h in zip(xs, heights):
+            path.lineTo(x, mid - h)
+        path.lineTo(xs[-1], mid)
+        for x, h in zip(xs[::-1], heights[::-1]):
+            path.lineTo(x, mid + h)
+        path.closeSubpath()
+        self._path_cache = (key, path)
+        return path
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -124,7 +137,6 @@ class TrackWidget(QWidget):
         # Title
         font = QFont(self.font())
         font.setPointSize(self._px(self.TITLE_POINT_SIZE))
-        font.setBold(self.current)
         painter.setFont(font)
         painter.setPen(text_color)
         # Loaded track only: ♫ while playing, ⏸ when paused, nothing when stopped.
@@ -137,7 +149,6 @@ class TrackWidget(QWidget):
             time_text = f"{format_time(self.progress * self.duration)} / {time_text}"
         time_font = QFont("Menlo")
         time_font.setPointSize(self._px(self.TIME_POINT_SIZE))
-        time_font.setBold(self.current)
         painter.save()
         painter.setFont(time_font)
         time_width = painter.fontMetrics().horizontalAdvance(time_text)
@@ -146,28 +157,15 @@ class TrackWidget(QWidget):
         painter.drawText(title_rect, Qt.AlignRight | Qt.AlignVCenter, time_text)
         painter.restore()
 
-        if self.title_left:
-            # Compact view: title on the left, then a quiet play/pause marker at the title's size, not bold.
-            gap = self._px(10)
-            marker_font = QFont(font)
-            marker_font.setBold(False)
-            marker_width = QFontMetrics(marker_font).horizontalAdvance(marker)
-            room = title_rect.width() - time_width - self._px(24) - (marker_width + gap if marker else 0)
-            text = painter.fontMetrics().elidedText(self.title, Qt.ElideRight, int(room))
-            painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
-            if marker:
-                marker_rect = title_rect.adjusted(painter.fontMetrics().horizontalAdvance(text) + gap, 0, 0, 0)
-                painter.setFont(marker_font)
-                painter.drawText(marker_rect, Qt.AlignLeft | Qt.AlignVCenter, marker)
-        else:
-            # Marker at the left edge; title centred with equal margins on both sides
-            # so it never runs into the marker or the time.
-            painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, marker)
-            marker_width = painter.fontMetrics().horizontalAdvance(marker)
-            side = max(time_width, marker_width) + self._px(24)
-            centre_rect = title_rect.adjusted(side, 0, -side, 0)
-            text = painter.fontMetrics().elidedText(self.title, Qt.ElideRight, int(centre_rect.width()))
-            painter.drawText(centre_rect, Qt.AlignHCenter | Qt.AlignVCenter, text)
+        # Title on the left, then a quiet play/pause marker at the title's size.
+        gap = self._px(10)
+        marker_width = painter.fontMetrics().horizontalAdvance(marker)
+        room = title_rect.width() - time_width - self._px(24) - (marker_width + gap if marker else 0)
+        text = painter.fontMetrics().elidedText(self.title, Qt.ElideRight, int(room))
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, text)
+        if marker:
+            marker_rect = title_rect.adjusted(painter.fontMetrics().horizontalAdvance(text) + gap, 0, 0, 0)
+            painter.drawText(marker_rect, Qt.AlignLeft | Qt.AlignVCenter, marker)
 
         # Waveform
         rect = wave_rect
@@ -179,21 +177,30 @@ class TrackWidget(QWidget):
             painter.drawLine(rect.left(), mid, rect.right(), mid)
             return
 
-        step = BAR_WIDTH + BAR_GAP
-        count = max(1, int(rect.width() // step))
-        bars = self._bars(count)
-        split = self.progress * count if self.current else -1
-        painter.setPen(Qt.NoPen)
-        half = rect.height() / 2
-        for i, v in enumerate(bars):
-            h = max(1.0, v * half)
-            painter.setBrush(accent if i < split else dim)
-            painter.drawRect(QRectF(rect.left() + i * step, mid - h, BAR_WIDTH, 2 * h))
+        path = self._wave_path(rect)
+        full = QRectF(self.rect())
+        split = rect.left() + self.progress * rect.width() if self.current else full.left()
+        for color, clip in (
+            (accent, QRectF(full.left(), full.top(), split - full.left(), full.height())),
+            (dim, QRectF(split, full.top(), full.right() - split, full.height())),
+        ):
+            if clip.width() <= 0:
+                continue
+            painter.save()
+            painter.setClipRect(clip)
+            fill = QColor(color)
+            # Quieter fill on rows that are neither selected nor loaded.
+            active = self.selected or self.current
+            if color is dim:
+                fill.setAlpha(110 if active else 55)
+            painter.setBrush(fill)
+            painter.setPen(Qt.NoPen)
+            painter.drawPath(path)
+            painter.restore()
 
         if self.current:
-            x = rect.left() + self.progress * count * step
             painter.setPen(text_color)
-            painter.drawLine(x, rect.top(), x, rect.bottom())
+            painter.drawLine(split, rect.top(), split, rect.bottom())
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
