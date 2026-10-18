@@ -63,6 +63,7 @@ Click a track to select it, double-click to play it, and click the waveform of t
 | ≡ | Choose the folder |
 | ⇥ / ⇉ | Stop after each track / play continuously |
 | ≃ | Loudness normalization (on by default) |
+| ◱ | Compact view (off: big text for rehearsal) |
 
 The slider in the middle of the top bar sets the volume (remembered between sessions). It works together with normalization.
 

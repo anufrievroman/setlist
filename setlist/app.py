@@ -36,6 +36,9 @@ AUTO_ADVANCE_OFF = "⇥"
 # reference is the quietest track, but never quieter than this.
 NORMALIZE_FLOOR_LUFS = -23.0
 SEEK_STEP_MS = 5000
+# The default view is big enough to read from across a rehearsal room; ◱ switches
+# to a compact view with every size multiplied by this.
+COMPACT_SCALE = 0.7
 
 HOTKEYS = [
     ("Space", "Play / pause the selected track"),
@@ -56,7 +59,7 @@ HOTKEYS = [
 ]
 
 TRANSPORT_STYLE = """
-QPushButton {{ border: none; background: transparent; font-size: {size}px; padding: 0 14px; color: palette(text); }}
+QPushButton {{ border: none; background: transparent; font-size: {size}px; padding: 0 {padding}px; color: palette(text); }}
 QPushButton:pressed {{ color: palette(highlight); }}
 """
 TRANSPORT_HEIGHT = 60  # shared by all transport buttons so different glyph sizes stay vertically centred
@@ -76,6 +79,7 @@ class MainWindow(QMainWindow):
         self.current_index = None
         self.folder = None
         self._pending_seek = None  # (position_ms, play) applied once a switched-to track has loaded
+        self.scale = COMPACT_SCALE if self.settings.value("compact", False, type=bool) else 1.0
 
         self.player = QMediaPlayer(self)
         self.audio_output = QAudioOutput(self)
@@ -101,14 +105,17 @@ class MainWindow(QMainWindow):
 
     # ----- UI -----
 
+    def _px(self, value):
+        """A size from the big view, scaled for the current view."""
+        return max(1, round(value * self.scale))
+
     def _transport_button(self, text, tooltip, slot, size=40):
         button = QPushButton(text)
         button.setToolTip(tooltip)
         button.setFocusPolicy(Qt.NoFocus)
-        button.setStyleSheet(TRANSPORT_STYLE.format(size=size))
-        button.setFixedHeight(TRANSPORT_HEIGHT)
         button.setCursor(Qt.PointingHandCursor)
         button.clicked.connect(slot)
+        self.transport_buttons.append((button, size))
         return button
 
     def _setting_button(self, text, tooltip, slot, checkable=False):
@@ -116,18 +123,18 @@ class MainWindow(QMainWindow):
         button.setToolTip(tooltip)
         button.setFocusPolicy(Qt.NoFocus)
         button.setCheckable(checkable)
-        button.setFixedSize(56, 44)
         button.clicked.connect(slot)
         self.setting_buttons.append(button)
         return button
 
     def _build_ui(self):
         self.setting_buttons = []
+        self.transport_buttons = []
         central = QWidget()
         central.setAutoFillBackground(True)
         self.central = central
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
+        self.main_layout = layout
 
         top = QHBoxLayout()
         # Left and right groups get equal widths so the volume slider is truly centred.
@@ -151,25 +158,28 @@ class MainWindow(QMainWindow):
         self.normalize_button.setChecked(self.settings.value("normalize", True, type=bool))
         right.addWidget(self.normalize_button)
 
+        self.compact_button = self._setting_button(
+            "◱", "Compact view (off: big text for rehearsal)", self._on_compact_toggled, checkable=True
+        )
+        self.compact_button.setChecked(self.scale != 1.0)
+        right.addWidget(self.compact_button)
+
         self.volume_slider = QSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(self.settings.value("volume", 100, type=int))
-        self.volume_slider.setFixedWidth(260)
         self.volume_slider.setFocusPolicy(Qt.NoFocus)  # arrow keys belong to the track list
         self.volume_slider.valueChanged.connect(self._on_volume_changed)
         self._refresh_volume_tooltip()
 
         self.volume_icon = QLabel("♫")
-        font = self.volume_icon.font()
-        font.setPointSize(20)
-        self.volume_icon.setFont(font)
-        icon_width = self.volume_icon.sizeHint().width()
+        self.volume_spacer = QWidget()  # mirrors the ♫ so the slider itself stays centred
 
         top.addLayout(left, 1)
         top.addWidget(self.volume_icon)
         top.addSpacing(6)
         top.addWidget(self.volume_slider)
-        top.addSpacing(6 + icon_width)  # mirrors the ♫ so the slider itself stays centred
+        top.addSpacing(6)
+        top.addWidget(self.volume_spacer)
         top.addLayout(right, 1)
         layout.addLayout(top)
 
@@ -181,15 +191,11 @@ class MainWindow(QMainWindow):
         self.list_container = QWidget()
         self.list_layout = QVBoxLayout(self.list_container)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
-        self.list_layout.setSpacing(4)
         self.list_layout.addStretch(1)
         self.scroll.setWidget(self.list_container)
 
         self.empty_label = QLabel("No mp3 or wav files in this folder")
         self.empty_label.setAlignment(Qt.AlignCenter)
-        font = self.empty_label.font()
-        font.setPointSize(14)
-        self.empty_label.setFont(font)
 
         self.list_stack = QStackedWidget()
         self.list_stack.addWidget(self.scroll)
@@ -198,9 +204,6 @@ class MainWindow(QMainWindow):
 
         self.summary_label = QLabel()
         self.summary_label.setAlignment(Qt.AlignCenter)
-        font = self.summary_label.font()
-        font.setPointSize(14)
-        self.summary_label.setFont(font)
         layout.addWidget(self.summary_label)
 
         transport = QHBoxLayout()
@@ -208,10 +211,10 @@ class MainWindow(QMainWindow):
         help_button.setToolTip("Keyboard shortcuts (?)")
         help_button.setFocusPolicy(Qt.NoFocus)
         help_button.setCursor(Qt.PointingHandCursor)
-        help_button.setFixedSize(32, 32)
         help_button.clicked.connect(self.show_hotkeys)
         self.help_button = help_button
-        transport.addSpacing(help_button.width())  # mirrors the ? button so the transport stays centred
+        self.help_spacer = QWidget()  # mirrors the ? button so the transport stays centred
+        transport.addWidget(self.help_spacer)
         transport.addStretch(1)
         transport.addWidget(self._transport_button("⏮", "Previous track", self.previous_track, size=30))
         transport.addWidget(self._transport_button("▶", "Play (Space)", self.play))
@@ -227,8 +230,35 @@ class MainWindow(QMainWindow):
         geometry = self.settings.value("geometry")
         if geometry:
             self.restoreGeometry(geometry)
-        self._apply_theme()
+        self._apply_scale()
         QApplication.styleHints().colorSchemeChanged.connect(lambda _: self._apply_theme())
+
+    def _apply_scale(self):
+        """Size everything for the current view (big rehearsal view or compact)."""
+        px = self._px
+        margin = px(12)
+        self.main_layout.setContentsMargins(margin, margin, margin, margin)
+        self.list_layout.setSpacing(px(4))
+        for button in self.setting_buttons:
+            button.setFixedSize(px(56), px(44))
+        self.volume_slider.setFixedWidth(px(260))
+        for label, size in ((self.volume_icon, 20), (self.empty_label, 14), (self.summary_label, 14)):
+            font = label.font()
+            font.setPointSize(px(size))
+            label.setFont(font)
+        self.volume_spacer.setFixedWidth(self.volume_icon.sizeHint().width())
+        for button, size in self.transport_buttons:
+            button.setStyleSheet(TRANSPORT_STYLE.format(size=px(size), padding=px(14)))
+            button.setFixedHeight(px(TRANSPORT_HEIGHT))
+        self.help_button.setFixedSize(px(32), px(32))
+        self.help_spacer.setFixedSize(self.help_button.size())
+        for track in self.tracks:
+            track.set_scale(self.scale, title_left=self.scale != 1.0)
+        self._apply_theme()
+        if self.selected_index is not None:
+            # Let the layout settle before scrolling, otherwise the old geometry is used.
+            track = self.tracks[self.selected_index]
+            QTimer.singleShot(0, lambda: self.scroll.ensureWidgetVisible(track, 0, 10))
 
     def _apply_theme(self):
         """Use the system's slightly darker 'Mid' color as background in dark mode."""
@@ -245,7 +275,9 @@ class MainWindow(QMainWindow):
         text = QApplication.palette().color(QPalette.Text)
         rgb = f"{text.red()}, {text.green()}, {text.blue()}"
         style = f"""
-            QPushButton {{ border: none; border-radius: 8px; font-size: 26px; background: rgba({rgb}, 0.08); }}
+            QPushButton {{
+                border: none; border-radius: {self._px(8)}px; font-size: {self._px(26)}px; background: rgba({rgb}, 0.08);
+            }}
             QPushButton:hover {{ background: rgba({rgb}, 0.14); }}
             QPushButton:pressed {{ background: rgba({rgb}, 0.22); }}
             QPushButton:checked {{ background: rgba({rgb}, 0.30); }}
@@ -265,7 +297,7 @@ class MainWindow(QMainWindow):
         """)
         # Deliberately quiet: grey, borderless, barely there until hovered.
         self.help_button.setStyleSheet(f"""
-            QPushButton {{ border: none; background: transparent; font-size: 17px; color: rgba({rgb}, 0.35); }}
+            QPushButton {{ border: none; background: transparent; font-size: {self._px(17)}px; color: rgba({rgb}, 0.35); }}
             QPushButton:hover {{ color: rgba({rgb}, 0.7); }}
         """)
 
@@ -335,6 +367,12 @@ class MainWindow(QMainWindow):
         self._refresh_auto_button()
         self.settings.setValue("auto_advance", self.auto_button.isChecked())
 
+    def _on_compact_toggled(self):
+        compact = self.compact_button.isChecked()
+        self.settings.setValue("compact", compact)
+        self.scale = COMPACT_SCALE if compact else 1.0
+        self._apply_scale()
+
     def _on_normalize_toggled(self):
         self.settings.setValue("normalize", self.normalize_button.isChecked())
         self._apply_volume()
@@ -396,6 +434,7 @@ class MainWindow(QMainWindow):
         files.sort(key=lambda f: (f.name not in saved, saved.get(f.name, 0)))
         for f in files:
             track = TrackWidget(str(f), f.stem)
+            track.set_scale(self.scale, title_left=self.scale != 1.0)
             track.clicked.connect(self._on_track_clicked)
             track.switch_requested.connect(lambda t: self.switch_keeping_time(self.tracks.index(t)))
             track.double_clicked.connect(self._on_track_double_clicked)
@@ -495,10 +534,10 @@ class MainWindow(QMainWindow):
     def load(self, index):
         self._pending_seek = None
         if self.current_index is not None:
-            self.tracks[self.current_index].set_state(current=False, playing=False)
+            self.tracks[self.current_index].set_state(current=False, playing=False, paused=False)
             self.tracks[self.current_index].set_progress(0.0)
         self.current_index = index
-        self.tracks[index].set_state(current=True, playing=False)
+        self.tracks[index].set_state(current=True, playing=False, paused=False)
         self.player.setSource(QUrl.fromLocalFile(self.tracks[index].path))
         self._apply_volume()
         self._update_progress()
@@ -596,6 +635,8 @@ class MainWindow(QMainWindow):
             self._update_progress()
             if play:
                 self.player.play()
+            else:
+                self.player.pause()  # shows as paused at that spot rather than stopped
             return
         if status != QMediaPlayer.EndOfMedia or self.current_index is None:
             return
@@ -612,7 +653,7 @@ class MainWindow(QMainWindow):
     def _on_playback_state(self, state):
         playing = state == QMediaPlayer.PlayingState
         if self.current_index is not None:
-            self.tracks[self.current_index].set_state(playing=playing)
+            self.tracks[self.current_index].set_state(playing=playing, paused=state == QMediaPlayer.PausedState)
         if playing:
             self.progress_timer.start()
         else:
