@@ -35,6 +35,7 @@ Requires Python 3.10+. If you don't have pipx yet, install it with `brew install
 ```sh
 setlist                     # opens the last folder you used
 setlist ~/Music/Gig-Set     # opens a specific folder
+setlist intro.mp3 song.wav  # opens just these files
 ```
 
 You can also run it as `python -m setlist`.
@@ -46,7 +47,7 @@ setlist --install-app            # creates ~/Applications/Setlist.app
 setlist --install-app /Applications
 ```
 
-This creates a regular app you can open from Launchpad or Spotlight and keep in the Dock. It runs Setlist with the Python environment you installed it into (the pipx one), so updates via `pipx upgrade setlist` take effect in the app too. Re-run the command if that environment is moved, or after an update that changes the app icon.
+This creates a regular app you can open from Launchpad or Spotlight and keep in the Dock. Select tracks in Finder and choose **Open With → Setlist**, or drop tracks or a folder on its Dock icon (Setlist doesn't make itself the default player for your audio files). It runs Setlist with the Python environment you installed it into (the pipx one), so updates via `pipx upgrade setlist` take effect in the app too. Re-run the command if that environment is moved, or after an update that changes the app icon.
 
 ### Keys
 
@@ -60,9 +61,12 @@ This creates a regular app you can open from Launchpad or Spotlight and keep in 
 | Backspace | Back to the start of the track |
 | Return | Play the selected track |
 | ⌘O | Open a folder |
+| ⇧⌘O | Open files |
 | ? | Show all shortcuts (also the ? in the bottom-right corner) |
 
-Click a track to select it, double-click to play it, and click the waveform of the loaded track to jump to that spot. Shift-click a track to switch to it at the same time position, which is handy for comparing different versions of a song. Drag tracks by their title to reorder them; the order is remembered for each folder (new files are added at the end).
+Click a track to select it, double-click to play it, and click the waveform of the loaded track to jump to that spot. Shift-click a track to switch to it at the same time position, which is handy for comparing different versions of a song. Drag tracks by their title to reorder them; the order is remembered for each folder (new files are added at the end). You can also drop files or a folder onto the window to open them.
+
+When you open a selection of files rather than a folder, Setlist shows just those tracks. Dragging still reorders them, but that order isn't saved.
 
 ### Top bar
 

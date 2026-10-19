@@ -6,7 +6,7 @@ import re
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QThreadPool, QTimer, QUrl
+from PySide6.QtCore import QEvent, QSettings, Qt, QThreadPool, QTimer, QUrl
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPalette, QShortcut
 from PySide6.QtMultimedia import QAudio, QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
@@ -49,6 +49,7 @@ HOTKEYS = [
     ("⇧↑ / ⇧↓", "Switch to previous / next track at the same time"),
     ("⌥↑ / ⌥↓", "Move the selected track up / down"),
     ("⌘O", "Open a folder"),
+    ("⇧⌘O", "Open files"),
     ("?", "Show this window"),
     ("", ""),
     ("Click", "Select a track"),
@@ -56,6 +57,7 @@ HOTKEYS = [
     ("Click waveform", "Jump to that spot in the playing track"),
     ("⇧-click", "Switch to a track at the same time"),
     ("Drag", "Reorder tracks (saved per folder)"),
+    ("Drop files", "Open them (or a folder)"),
 ]
 
 TRANSPORT_STYLE = """
@@ -69,8 +71,12 @@ def natural_key(name):
     return [int(part) if part.isdigit() else part.lower() for part in re.split(r"(\d+)", name)]
 
 
+def is_audio(path):
+    return path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, start_folder=None):
+    def __init__(self, start_paths=None):
         super().__init__()
         self.settings = QSettings("Setlist", "Setlist")
         self.loudness = {}
@@ -98,10 +104,11 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_shortcuts()
 
-        # Apps launched from Finder start in "/", which is never a useful default.
-        default = Path.cwd() if Path.cwd() != Path("/") else Path.home()
-        folder = start_folder or self.settings.value("folder") or str(default)
-        self.load_folder(folder)
+        self.setAcceptDrops(True)
+        if not (start_paths and self.open_paths(start_paths)):
+            # Apps launched from Finder start in "/", which is never a useful default.
+            default = Path.cwd() if Path.cwd() != Path("/") else Path.home()
+            self.load_folder(self.settings.value("folder") or str(default))
 
     # ----- UI -----
 
@@ -319,6 +326,7 @@ class MainWindow(QMainWindow):
             shortcut.setContext(Qt.ApplicationShortcut)
             shortcut.activated.connect(slot)
         QShortcut(QKeySequence.Open, self, activated=self.choose_folder)
+        QShortcut(QKeySequence("Ctrl+Shift+O"), self, activated=self.choose_files)  # ⇧⌘O on macOS
         for seq in ("?", "Shift+?"):  # macOS reports ? as Shift+? on most layouts
             QShortcut(QKeySequence(seq), self, activated=self.show_hotkeys)
 
@@ -354,6 +362,15 @@ class MainWindow(QMainWindow):
         self.auto_button.setToolTip(
             "Next track starts automatically" if on else "After each track, wait for Space before playing the next"
         )
+
+    def dragEnterEvent(self, event):
+        if any(url.isLocalFile() for url in event.mimeData().urls()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if self.open_paths(paths):
+            event.acceptProposedAction()
 
     def save_window_state(self):
         self.settings.setValue("geometry", self.saveGeometry())
@@ -402,10 +419,55 @@ class MainWindow(QMainWindow):
 
     # ----- Folder / tracks -----
 
+    def _dialog_dir(self):
+        if self.folder:
+            return self.folder
+        return str(Path(self.tracks[0].path).parent) if self.tracks else str(Path.home())
+
     def choose_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Choose tracks folder", self.folder or str(Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, "Choose tracks folder", self._dialog_dir())
         if folder:
             self.load_folder(folder)
+
+    def choose_files(self):
+        files, _ = QFileDialog.getOpenFileNames(
+            self, "Open tracks", self._dialog_dir(), "Audio files (*.mp3 *.wav *.MP3 *.WAV)"
+        )
+        if files:
+            self.open_paths(files)
+
+    def open_paths(self, paths):
+        """Open a folder, or a set of files (from the command line, Finder or a drop).
+
+        Returns False, leaving the current list alone, if there is nothing to open."""
+        paths = [Path(p).expanduser() for p in paths]
+        if len(paths) == 1 and paths[0].is_dir():
+            self.load_folder(paths[0])
+            return True
+        files = []
+        for path in paths:
+            if path.is_dir():
+                files += sorted((f for f in path.iterdir() if is_audio(f)), key=lambda f: natural_key(f.name))
+            elif is_audio(path):
+                files.append(path)
+        files = list(dict.fromkeys(f.absolute() for f in files))
+        if not files:
+            return False
+        self.load_files(files)
+        return True
+
+    def load_files(self, files):
+        """Show just these files. The list isn't a folder, so its order isn't saved."""
+        folders = {f.parent for f in files}
+        if len(folders) == 1:
+            folder = folders.pop()
+            files.sort(key=lambda f: natural_key(f.name))
+            files = self._saved_order(str(folder), files)
+            self.setWindowTitle(f"Setlist — {folder.name}")
+        else:
+            self.setWindowTitle("Setlist")
+        self.folder = None
+        self._set_tracks(files)
 
     def load_folder(self, folder):
         path = Path(folder).expanduser()
@@ -414,7 +476,10 @@ class MainWindow(QMainWindow):
         self.folder = str(path)
         self.settings.setValue("folder", self.folder)
         self.setWindowTitle(f"Setlist — {path.name}")
+        files = sorted((f for f in path.iterdir() if is_audio(f)), key=lambda f: natural_key(f.name))
+        self._set_tracks(self._saved_order(self.folder, files))
 
+    def _set_tracks(self, files):
         self.player.stop()
         self.player.setSource(QUrl())
         self.current_index = None
@@ -425,13 +490,6 @@ class MainWindow(QMainWindow):
         self.loudness = {}
         self.pool.clear()
 
-        files = sorted(
-            (f for f in path.iterdir() if f.is_file() and f.suffix.lower() in AUDIO_EXTENSIONS),
-            key=lambda f: natural_key(f.name),
-        )
-        # Apply the user's saved order; new files go to the end, missing ones are skipped.
-        saved = {name: i for i, name in enumerate(self._track_orders().get(self.folder, []))}
-        files.sort(key=lambda f: (f.name not in saved, saved.get(f.name, 0)))
         for f in files:
             track = TrackWidget(str(f), f.stem)
             track.set_scale(self.scale)
@@ -456,6 +514,11 @@ class MainWindow(QMainWindow):
 
     # ----- Track order -----
 
+    def _saved_order(self, folder, files):
+        """Apply the user's saved order; new files go to the end, missing ones are skipped."""
+        saved = {name: i for i, name in enumerate(self._track_orders().get(folder, []))}
+        return sorted(files, key=lambda f: (f.name not in saved, saved.get(f.name, 0)))
+
     def _track_orders(self):
         try:
             return json.loads(self.settings.value("track_orders", "{}"))
@@ -463,6 +526,8 @@ class MainWindow(QMainWindow):
             return {}
 
     def _save_order(self):
+        if self.folder is None:  # a set of opened files, not a folder
+            return
         orders = self._track_orders()
         orders[self.folder] = [Path(track.path).name for track in self.tracks]
         self.settings.setValue("track_orders", json.dumps(orders))
@@ -689,7 +754,9 @@ class MainWindow(QMainWindow):
 
 def parse_args():
     parser = argparse.ArgumentParser(prog="setlist", description="Backing-track player for band practice.")
-    parser.add_argument("folder", nargs="?", help="folder with .mp3/.wav tracks (default: last used)")
+    parser.add_argument(
+        "paths", nargs="*", metavar="PATH", help="folder or .mp3/.wav files to open (default: last used folder)"
+    )
     parser.add_argument(
         "--install-app",
         nargs="?",
@@ -701,6 +768,35 @@ def parse_args():
     return parser.parse_known_args()[0]
 
 
+class Application(QApplication):
+    """Passes macOS "open document" events (Finder's Open With, dropping on the Dock icon)
+    to `open_handler`, one call per batch of files."""
+
+    def __init__(self, argv):
+        super().__init__(argv)
+        self.open_handler = None  # set once the window exists; files wait until then
+        self.pending_files = []
+        # Finder sends a multi-file selection as one event per file; collect them.
+        self._flush_timer = QTimer(self, singleShot=True, interval=50)
+        self._flush_timer.timeout.connect(self._flush)
+
+    def event(self, event):
+        if event.type() == QEvent.FileOpen and event.file():
+            self.pending_files.append(event.file())
+            self._flush_timer.start()
+            return True
+        return super().event(event)
+
+    def take_pending_files(self):
+        self._flush_timer.stop()
+        files, self.pending_files = self.pending_files, []
+        return files
+
+    def _flush(self):
+        if self.open_handler and self.pending_files:
+            self.open_handler(self.take_pending_files())
+
+
 def main():
     args = parse_args()
     if args.install_app is not None:
@@ -709,12 +805,21 @@ def main():
         print(f"Installed {install_app(args.install_app or None)}")
         return
 
-    app = QApplication(sys.argv)
+    app = Application(sys.argv)
     app.setApplicationName("Setlist")
     app.setWindowIcon(QIcon(str(ICON_PATH)))
-    window = MainWindow(args.folder)
-    app.aboutToQuit.connect(window.save_window_state)  # ⌘Q may skip closeEvent
-    window.show()
+
+    def start():
+        window = MainWindow(args.paths + app.take_pending_files())
+        app.open_handler = window.open_paths
+        app.aboutToQuit.connect(window.save_window_state)  # ⌘Q may skip closeEvent
+        window.show()
+        app.window = window
+
+    # When Finder launches us to open files, their open events arrive once the event
+    # loop has finished launching the app (after 0 ms timers, before any real delay).
+    # Waiting for them opens those files directly instead of flashing the last folder.
+    QTimer.singleShot(100, start)
     sys.exit(app.exec())
 
 

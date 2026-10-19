@@ -69,6 +69,22 @@ def install_app(destination=None):
                 "CFBundleIconFile": "Setlist.icns",
                 "LSMinimumSystemVersion": "11.0",
                 "NSHighResolutionCapable": True,
+                # Lets Finder's "Open With" and the Dock icon hand us tracks or a folder.
+                # "Alternate" so Setlist never becomes the default player for these files.
+                "CFBundleDocumentTypes": [
+                    {
+                        "CFBundleTypeName": "Audio track",
+                        "CFBundleTypeRole": "Viewer",
+                        "LSHandlerRank": "Alternate",
+                        "LSItemContentTypes": ["public.mp3", "com.microsoft.waveform-audio"],
+                    },
+                    {
+                        "CFBundleTypeName": "Folder",
+                        "CFBundleTypeRole": "Viewer",
+                        "LSHandlerRank": "Alternate",
+                        "LSItemContentTypes": ["public.folder"],
+                    },
+                ],
             },
             f,
         )
